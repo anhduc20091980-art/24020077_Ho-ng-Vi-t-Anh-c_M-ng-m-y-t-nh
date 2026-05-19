@@ -1,7 +1,7 @@
 ####################################################
 # DVrouter.py
-# Name:Hoàng Việt Anh Đức
-# HUID:24020077
+# Name:
+# HUID:
 #####################################################
 
 from router import Router
@@ -10,15 +10,17 @@ import json
 
 
 class DVrouter(Router):
-    """
-    Distance Vector Routing
+    """Distance vector routing protocol implementation.
+
+    Add your own class fields and initialization code (e.g. to create forwarding table
+    data structures). See the `Router` base class for docstrings of the methods to
+    override.
     """
 
     INFINITY = 16
 
     def __init__(self, addr, heartbeat_time):
-        Router.__init__(self, addr)
-
+        Router.__init__(self, addr)  # Initialize base class - DO NOT REMOVE
         self.heartbeat_time = heartbeat_time
         self.last_time = 0
 
@@ -33,10 +35,6 @@ class DVrouter(Router):
 
         # destination -> output port
         self.forwarding_table = {}
-
-    # ===============================
-    # Utility functions
-    # ===============================
 
     def broadcast_vector(self):
         msg = json.dumps(self.distance_vector)
@@ -79,29 +77,21 @@ class DVrouter(Router):
 
         return old_vector != self.distance_vector
 
-    # ===============================
-    # Required methods
-    # ===============================
-
     def handle_packet(self, port, packet):
         """Process incoming packet."""
 
         if packet.is_traceroute:
-            # normal packet
             dst = packet.dst_addr
             if dst in self.forwarding_table:
-                out_port = self.forwarding_table[dst]
-                self.send(out_port, packet)
+                self.send(self.forwarding_table[dst], packet)
 
         else:
-            # routing packet
             try:
                 recv_vector = json.loads(packet.content)
-            except:
+            except Exception:
                 return
 
             neighbor = packet.src_addr
-
             old = self.neighbor_vectors.get(neighbor, {})
             if old != recv_vector:
                 self.neighbor_vectors[neighbor] = recv_vector
@@ -119,7 +109,6 @@ class DVrouter(Router):
             self.neighbor_vectors[endpoint] = {}
 
         changed = self.recompute_routes()
-
         if changed:
             self.broadcast_vector()
         else:
@@ -136,18 +125,17 @@ class DVrouter(Router):
                 del self.neighbor_vectors[endpoint]
 
         changed = self.recompute_routes()
-
         if changed:
             self.broadcast_vector()
 
     def handle_time(self, time_ms):
         """Handle current time."""
-
         if time_ms - self.last_time >= self.heartbeat_time:
             self.last_time = time_ms
             self.broadcast_vector()
 
     def __repr__(self):
+        """Representation for debugging in the network visualizer."""
         return (
             f"DVrouter(addr={self.addr})\n"
             f"DV={self.distance_vector}\n"
