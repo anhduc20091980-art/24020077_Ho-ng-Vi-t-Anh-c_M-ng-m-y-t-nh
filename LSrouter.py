@@ -5,6 +5,7 @@
 #####################################################
 
 from router import Router
+from packet import Packet
 import json
 import heapq
 
@@ -105,92 +106,79 @@ class LSrouter(Router):
             # periodic broadcast of our link-state
             self.broadcast_lsp()
 
-    def __repr__(self):
-        """Representation for debugging in the network visualizer."""
-        return f"LSrouter(addr={self.addr}, seq={self.seq}, links={self.adj.get(self.addr,{})})"
-
-    # Helper methods for LSrouter
     def rebuild_adjacency(self):
-        """Build global adjacency map from lsdb entries."""
-        # adjacency: node -> {neighbor: cost}
-        self.global_adj = {}
-        # include entries from lsdb
+        """Rebuild the global adjacency map from the link-state database."""
+        self.adj = {self.addr: dict(self.lsdb.get(self.addr, (0, {}))[1])}
         for node, (seq, links) in self.lsdb.items():
-            self.global_adj[node] = dict(links)
-        # ensure our own entry exists
-        self.global_adj.setdefault(self.addr, dict(self.adj.get(self.addr, {})))
+            if node not in self.adj:
+                self.adj[node] = {}
+            for nbr, cost in links.items():
+                self.adj[node][nbr] = cost
 
     def compute_forwarding_table(self):
-        """Run Dijkstra on global_adj and set self.forwarding_table (dest -> port).
+        """Compute shortest paths with Dijkstra and build the forwarding table."""
+        self.forwarding_table = {}
+        graph = {node: dict(neighbors) for node, neighbors in self.adj.items()}
 
-        For destinations that are directly our neighbor, forward to that port.
-        """
-        # Dijkstra
-        dist = {n: float('inf') for n in self.global_adj}
-        prev = {}
+        if self.addr not in graph:
+            graph[self.addr] = {}
+
+        dist = {node: float('inf') for node in graph}
+        prev = {node: None for node in graph}
         dist[self.addr] = 0
         pq = [(0, self.addr)]
+
         while pq:
-            d, u = heapq.heappop(pq)
-            if d != dist.get(u, float('inf')):
+            cur_dist, node = heapq.heappop(pq)
+            if cur_dist != dist[node]:
                 continue
-            for v, w in self.global_adj.get(u, {}).items():
-                nd = d + w
-                if nd < dist.get(v, float('inf')):
-                    dist[v] = nd
-                    prev[v] = u
-                    heapq.heappush(pq, (nd, v))
+            for nbr, cost in graph.get(node, {}).items():
+                nd = cur_dist + cost
+                if nd < dist.get(nbr, float('inf')):
+                    dist[nbr] = nd
+                    prev[nbr] = node
+                    heapq.heappush(pq, (nd, nbr))
 
-        # Build forwarding table: for each dest, find next hop neighbor
-        ft = {}
-        for dest in dist:
-            if dest == self.addr or dist[dest] == float('inf'):
+        for dest, d in dist.items():
+            if dest == self.addr or d == float('inf'):
                 continue
-            # walk back from dest to find neighbor next to self.addr
-            cur = dest
-            prev_node = prev.get(cur)
-            if prev_node is None:
-                # direct neighbor?
-                if cur in self.adj.get(self.addr, {}):
-                    next_hop = cur
-                else:
-                    continue
+            if dest in self.ports.values():
+                for port, nbr in self.ports.items():
+                    if nbr == dest:
+                        self.forwarding_table[dest] = port
+                        break
+                continue
+
+            nxt = dest
+            while prev.get(nxt) is not None and prev[nxt] != self.addr:
+                nxt = prev[nxt]
+            if prev.get(dest) is None:
+                continue
+            next_hop = prev[dest]
+            if next_hop == self.addr:
+                # direct link from this router to dest
+                for port, nbr in self.ports.items():
+                    if nbr == dest:
+                        self.forwarding_table[dest] = port
+                        break
             else:
-                while prev.get(cur) is not None and prev[cur] != self.addr:
-                    cur = prev[cur]
-                # now prev[cur] == self.addr or prev[cur] is None
-                if prev.get(cur) == self.addr:
-                    next_hop = cur
-                else:
-                    # cur is direct neighbor
-                    next_hop = cur
-
-            # find port for next_hop
-            port = None
-            for p, nbr in self.ports.items():
-                if nbr == next_hop:
-                    port = p
-                    break
-            if port is not None:
-                ft[dest] = port
-
-        self.forwarding_table = ft
-        if getattr(self, 'debug', False):
-            try:
-                print(f"LSrouter {self.addr} global_adj={self.global_adj}")
-                print(f"LSrouter {self.addr} forwarding_table={self.forwarding_table}")
-            except Exception:
-                pass
+                # For a multi-hop path, choose the first port on the edge from us.
+                for port, nbr in self.ports.items():
+                    if nbr == next_hop:
+                        self.forwarding_table[dest] = port
+                        break
 
     def broadcast_lsp(self):
-        """Broadcast our current link-state (with seq) to all neighbors."""
-        from packet import Packet
-        # ensure our lsdb entry is up to date
-        self.lsdb[self.addr] = (self.seq, dict(self.adj.get(self.addr, {})))
-        content = json.dumps({"origin": self.addr, "seq": self.seq, "links": self.adj.get(self.addr, {})})
+        """Flood our link-state advertisement to all direct neighbors."""
+        content = json.dumps({"origin": self.addr, "seq": self.seq, "links": dict(self.adj.get(self.addr, {}))})
         for port in list(self.ports.keys()):
-            pkt = Packet(Packet.ROUTING, self.addr, None, content=content)
-            try:
-                self.send(port, pkt)
-            except Exception:
-                pass
+            packet = Packet(Packet.ROUTING, self.addr, self.ports[port], content)
+            self.send(port, packet)
+
+    def __repr__(self):
+        """Representation for debugging in the network visualizer."""
+        return (
+            f"LSrouter(addr={self.addr})\n"
+            f"LS={self.lsdb}\n"
+            f"FWD={self.forwarding_table}"
+        )
